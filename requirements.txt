@@ -1,6 +1,8 @@
 jupyterlab==4.0.9
+jupyterlab-widgets==3.0.9
 jupyterlab_pygments==0.3.0
 jupyterlab_server==2.25.2
+ipywidgets==8.1.1
 binance-connector==3.5.1
 matplotlib==3.8.2
 pandas==2.1.4
