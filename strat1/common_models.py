@@ -2,6 +2,12 @@ from dataclasses import dataclass
 from typing import List
 import pandas as pd
 import matplotlib.pyplot as plt
+from enum import Enum
+
+
+class DataSource(Enum):
+    LOCAL = 0
+    LIVE = 1
 
 
 @dataclass
