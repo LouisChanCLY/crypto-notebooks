@@ -1,16 +1,24 @@
 from datetime import UTC, datetime, timedelta
 import json
+import time
 from typing import List
 import pandas as pd
 from tqdm import tqdm
 import requests
+import logging
+from enum import Enum
 
 BINANCE_DOWNLOAD_FILE_NAME = "binance_download.csv"
 
 
-def get_interest_history(
+class Source(Enum):
+    BINANCE = "BINANCE"
+    OKX = "OKX"
+
+
+def get_binance_interest_history(
     asset: str, vipLevel: int, startTime: datetime, endTime: datetime, size: int = 90
-) -> pd.DataFrame:
+) -> pd.Series:
     """Get historical interest rates"""
     response = json.loads(
         requests.get(
@@ -33,10 +41,44 @@ def get_interest_history(
     _["datetime"] = _["timestamp"].apply(
         lambda x: datetime.fromtimestamp(int(x) / 1000, UTC)
     )
-    return _.set_index("datetime").sort_index().drop_duplicates()
+    return (
+        _.set_index("datetime")
+        .sort_index()
+        .drop_duplicates()["dailyInterestRate"]
+        .rename(asset)
+    )
 
 
-def get_price_history(
+def get_okx_interest_history(
+    asset: str, startTime: datetime, endTime: datetime, size: int = 100
+) -> pd.Series:
+    response = json.loads(
+        requests.get(
+            "https://www.okx.com/api/v5/finance/savings/lending-rate-history",
+            params={
+                "ccy": asset,
+                "before": int(startTime.timestamp() * 1000),
+                "after": int(endTime.timestamp() * 1000),
+            },
+        ).content
+    )
+    _ = pd.DataFrame(response["data"])
+    _ = _.rename(
+        {
+            "ccy": "asset",
+            "ts": "timestamp",
+        },
+        axis=1,
+    )
+    _["rate"] = pd.to_numeric(_["rate"])
+    _["datetime"] = _["timestamp"].apply(
+        lambda x: datetime.fromtimestamp(int(x) / 1000, UTC)
+    )
+
+    return _.set_index("datetime").sort_index().drop_duplicates()["rate"].rename(asset)
+
+
+def get_binance_price_history(
     client, symbol: str, interval: str, startTime: datetime, endTime: datetime
 ) -> pd.DataFrame:
     _ = pd.DataFrame(
@@ -91,12 +133,13 @@ def get_month_list(start_date: datetime, end_date: datetime) -> List[datetime]:
 
 
 def load_data(
-    api_key,
-    api_secret,
+    api_key: str,
+    api_secret: str,
     interest_rate_assets: List[str],
     price_assets: List[str],
     start_date: datetime,
     end_date: datetime,
+    interest_rate_source: str = Source.BINANCE,
 ):
     from binance.spot import Spot
 
@@ -107,19 +150,33 @@ def load_data(
     df_rates = []
     for asset in tqdm(interest_rate_assets, desc="Getting Interest Rates"):
         _df = []
-        for start, next_start in zip(months[:-1], months[1:]):
-            _df.append(
-                get_interest_history(
-                    asset=asset,
-                    vipLevel=0,
-                    startTime=start,
-                    endTime=next_start + timedelta(hours=-1),
+        if interest_rate_source == Source.BINANCE:
+            for start, next_start in zip(months[:-1], months[1:]):
+                _df.append(
+                    get_binance_interest_history(
+                        asset=asset,
+                        vipLevel=0,
+                        startTime=start,
+                        endTime=next_start + timedelta(hours=-1),
+                    )
                 )
-            )
+        elif interest_rate_source == Source.OKX:
+            min_date = end_date
+            while min_date > start_date:
+                _ = get_okx_interest_history(
+                    asset=asset,
+                    startTime=start_date + timedelta(hours=-1),
+                    endTime=min_date,
+                )
+                _df.append(_)
+                min_date = _.index.min()
+                time.sleep(1 / 6)
+        else:
+            raise "Source not supported."
+
         _df = pd.concat(_df)
-        df_rates.append(
-            _df.reindex(timeline)["dailyInterestRate"].ffill().rename(asset)
-        )
+        df_rates.append(_df.reindex(timeline).ffill())
+
     df_rates = pd.concat(df_rates, axis=1)
 
     df_price = []
@@ -127,7 +184,7 @@ def load_data(
         _df = []
         for start, next_start in zip(months[:-1], months[1:]):
             _df.append(
-                get_price_history(
+                get_binance_price_history(
                     client=client,
                     symbol=asset,
                     interval="1h",
