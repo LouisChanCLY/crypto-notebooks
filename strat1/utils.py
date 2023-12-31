@@ -1,7 +1,8 @@
+from abc import ABC, abstractmethod
 from datetime import UTC, datetime, timedelta
 import json
 import time
-from typing import List
+from typing import Callable, List
 import pandas as pd
 from tqdm import tqdm
 import requests
@@ -11,13 +12,38 @@ from enum import Enum
 BINANCE_DOWNLOAD_FILE_NAME = "binance_download.csv"
 
 
+def break_date_range_into_intervals(
+    start_time: datetime, end_time: datetime, interval_size: int, interval_unit: str
+):
+    current_time = start_time
+    while current_time < end_time:
+        next_time = current_time + timedelta(**{interval_unit: interval_size})
+        if next_time > end_time:
+            next_time = end_time
+        yield (current_time, next_time)
+        current_time = next_time
+
+
 class Source(Enum):
     BINANCE = "BINANCE"
     OKX = "OKX"
 
 
+def interest_history_factory(source) -> Callable[..., pd.Series]:
+    if source == Source.BINANCE:
+        return get_binance_interest_history
+    elif source == Source.OKX:
+        return get_okx_interest_history
+    else:
+        raise "Source not supported."
+
+
 def get_binance_interest_history(
-    asset: str, vipLevel: int, startTime: datetime, endTime: datetime, size: int = 90
+    asset: str,
+    startTime: datetime,
+    endTime: datetime,
+    size: int = 90,
+    vipLevel: int = 0,
 ) -> pd.Series:
     """Get historical interest rates"""
     response = json.loads(
@@ -147,13 +173,15 @@ def load_data(
     timeline = pd.date_range(start=start_date, end=end_date, freq="H", tz="UTC")
     client = Spot(api_key, api_secret)
 
+    fn_get_interest_history = interest_history_factory(interest_rate_source)
+
     df_rates = []
     for asset in tqdm(interest_rate_assets, desc="Getting Interest Rates"):
         _df = []
         if interest_rate_source == Source.BINANCE:
             for start, next_start in zip(months[:-1], months[1:]):
                 _df.append(
-                    get_binance_interest_history(
+                    fn_get_interest_history(
                         asset=asset,
                         vipLevel=0,
                         startTime=start,
@@ -163,7 +191,7 @@ def load_data(
         elif interest_rate_source == Source.OKX:
             min_date = end_date
             while min_date > start_date:
-                _ = get_okx_interest_history(
+                _ = fn_get_interest_history(
                     asset=asset,
                     startTime=start_date + timedelta(hours=-1),
                     endTime=min_date,
